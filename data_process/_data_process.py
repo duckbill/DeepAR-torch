@@ -327,3 +327,13 @@ def visual_train(Figure_size, target, Viewlist, View_interval):
 
     anim.save('train.mp4', writer=writer)
     # plt.show()
+
+def unpadding(y):
+    a = y.copy()
+    h = y.shape[1]
+    s = np.empty(y.shape[0] + y.shape[1] -1)
+
+    for i in range(s.shape[0]):
+        s[i]=np.diagonal(np.flip(a,1), offset= -i + h-1,axis1=0,axis2=1).copy().mean()
+    
+    return s

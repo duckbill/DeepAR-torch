@@ -25,7 +25,7 @@ from torch.utils.data.sampler import RandomSampler
 from tqdm import tqdm
 
 import utils
-import model.net as net
+import model.deepAR as net
 from evaluate import evaluate
 import matplotlib
 matplotlib.use('Agg')
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     # test_rmse_loss_batch = np.empty((100,10))
 
     model_dir = os.path.join('experiments', args.model_name)
-    json_path = os.path.join(model_dir, 'model.params.json')
+    json_path = os.path.join('experiments', 'model.params.json')
     assert os.path.isfile(json_path), f'No json configuration file found at {json_path}'
     params = Params(json_path)
 

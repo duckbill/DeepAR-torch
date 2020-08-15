@@ -137,6 +137,8 @@ def train_and_evaluate(model: nn.Module,
     loss_summary = np.zeros((train_len * params.num_epochs))
     for epoch in range(params.num_epochs):
         logger.info('Epoch {}/{}'.format(epoch + 1, params.num_epochs))
+        test_len = len(test_loader)
+        print(test_len)
         loss_summary[epoch * train_len:(epoch + 1) * train_len] = train(model, optimizer, loss_fn, train_loader,  test_loader, params, epoch)
         test_metrics = evaluate(model, loss_fn, test_loader, params, epoch, sample=args.sampling)
         ND_summary[epoch] = test_metrics['ND']
@@ -237,7 +239,7 @@ if __name__ == "__main__":
     params.predict_steps=h
     params.num_class = 1
     params.cov_dim = 0
-    params.predict_batch=test_set.test_len
+    params.predict_batch=int(test_set.test_len // 2)
 
     params.relative_metrics = args.relative_metrics
     params.sampling =  args.sampling

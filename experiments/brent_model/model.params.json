@@ -6,5 +6,5 @@
     "lstm_hidden_dim": 40,
     "embedding_dim": 20,
     "sample_times": 200,
-    "lstm_dropout": 0.1,
+    "lstm_dropout": 0.1
 }

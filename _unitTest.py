@@ -40,6 +40,7 @@ parser.add_argument('-step', type=int, default=6, metavar='N',
                     help='steps for prediction (default: 1)')
 parser.add_argument('-dataset', type=str, default='Brent')
 parser.add_argument('-dim', type=int, default=24)
+parser.add_argument('-sample-dense', action='store_true',default=True, help='Whether to sample during evaluation')
 
 parser.add_argument('--model-name', default='brent_model', help='Directory containing params.json')
 parser.add_argument('--relative-metrics', action='store_true', help='Whether to normalize the metrics by label scales')
@@ -48,8 +49,6 @@ parser.add_argument('--save-best', action='store_true', help='Whether to save be
 parser.add_argument('--restore-file', default=None,
                     help='Optional, name of the file in --model_dir containing weights to reload before \
                     training')  # 'best' or 'epoch_#'
-
-
 
 
 def train(model: nn.Module,
@@ -189,18 +188,23 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     data = args.dataset
-    dim = args.dim
-    ts = np.load('./data/paper/{}.npz'.format(data))
-    ts = ts['arr_0'].reshape(-1)
+    data ='MT_001'
+    ts = np.load('./data/paper/{}.npy'.format(data))
+    ts = ts.reshape(-1)
     # set_length = len(ts)
-    segmentation = int(len(ts)*2/3)
-    # np.savez('ts.npz',ts)
+    segmentation = int(len(ts)*5/6)
     # ts = ts.reshape(-1,1)
-
     # scaler, ts_scaled = scale_raw(ts)
-    scaler = MinMaxScaler(feature_range=(-1, 1))
+    
+    dim = args.dim
     h = args.step
+    dim=168
+    h=24
+
+    args.model_name = '{}_h{}_model'.format(data,h)
     dataset = create_dataset(ts, look_back=dim + h - 1)
+
+    scaler = MinMaxScaler(feature_range=(-1, 1))
     dataset = scaler.fit_transform(dataset)
     X, Y = dataset[:, :(0 - h)], dataset[:, (0-h):]
 
@@ -214,8 +218,8 @@ if __name__ == "__main__":
     # train_target = train_target.reshape(-1, h)
     # test_target = test_target.reshape(-1, h)
     
-    train_set = prep_data(train_data,train=True,h=h,dim=dim)
-    test_set = prep_data(test_data,train=False,h=h,dim=dim) # Remaining modification
+    train_set = prep_data(train_data,train=True,h=h,dim=dim,sample_dense=args.sample_dense)
+    test_set = prep_data(test_data,train=False,h=h,dim=dim,sample_dense=args.sample_dense) # Remaining modification
 
     print('')
 
@@ -232,6 +236,8 @@ if __name__ == "__main__":
     assert os.path.isfile(json_path), f'No json configuration file found at {json_path}'
     params = Params(json_path)
 
+    params.merge(args)
+
     params.train_window = dim+h
     params.test_window = params.train_window
     params.predict_start = dim
@@ -241,14 +247,18 @@ if __name__ == "__main__":
     params.cov_dim = 0
     params.predict_batch=int(test_set.test_len // 2)
 
-    params.relative_metrics = args.relative_metrics
-    params.sampling =  args.sampling
+    # test
+    params.num_epochs = 1
+
+    # params.relative_metrics = args.relative_metrics
+    # params.sampling =  args.sampling
     params.model_dir = model_dir
     params.plot_dir = os.path.join(model_dir, 'figures')
 
+
     # create missing directories
     try:
-        os.mkdir(params.plot_dir)
+        os.makedirs(params.plot_dir)
     except FileExistsError:
         pass
 
@@ -273,17 +283,19 @@ if __name__ == "__main__":
     logger.info('Loading complete.')
 
     logger.info(f'Model: \n{str(model)}')
-    optimizer = optim.Adam(model.parameters(), lr=params.learning_rate)
-
-    # fetch loss function
-    loss_fn = net.loss_fn
-
-    # Train the model
     logger.info('Starting training for {} epoch(s)'.format(params.num_epochs))
-    train_and_evaluate(model,
-                       train_loader,
-                       test_loader,
-                       optimizer,
-                       loss_fn,
-                       params,
-                       args.restore_file)
+
+    model.xfit(train_loader,test_loader,restore_file=None)
+    # optimizer = optim.Adam(model.parameters(), lr=params.learning_rate)
+
+    # # fetch loss function
+    # loss_fn = net.loss_fn
+
+    # # Train the model
+    # train_and_evaluate(model,
+    #                    train_loader,
+    #                    test_loader,
+    #                    optimizer,
+    #                    loss_fn,
+    #                    params,
+    #                    args.restore_file)

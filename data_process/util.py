@@ -1,6 +1,10 @@
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), os.path.pardir))
+
 import json
 import logging
-import os
+
 import shutil
 
 import torch
@@ -12,10 +16,9 @@ matplotlib.use('Agg')
 #matplotlib.rcParams['savefig.dpi'] = 300 #Uncomment for higher plot resolutions
 import matplotlib.pyplot as plt
 
-import os
-
 from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import DataLoader, Dataset, Sampler
+import math
 
 
 logger = logging.getLogger('DeepAR.Data')
@@ -177,6 +180,12 @@ class Params:
         with open(json_path) as f:
             params = json.load(f)
             self.__dict__.update(params)
+        
+    def merge(self, args):
+        new = vars(args)
+        for key in new:
+            if not key in self.dict:
+                self.dict[key] = new[key]
 
     @property
     def dict(self):
@@ -274,3 +283,221 @@ def plot_all_epoch(variable, save_name, location='./figures/'):
     plt.plot(x, variable[:num_samples])
     f.savefig(os.path.join(location, save_name + '_summary.png'))
     plt.close()
+
+def init_metrics(sample=True):
+    metrics = {
+        'ND': np.zeros(2),  # numerator, denominator
+        'RMSE': np.zeros(3),  # numerator, denominator, time step count
+        'test_loss': np.zeros(2),
+    }
+    if sample:
+        metrics['rou90'] = np.zeros(2)
+        metrics['rou50'] = np.zeros(2)
+    return metrics
+
+def get_metrics(sample_mu, labels, predict_start, samples=None, relative=False):
+    metric = dict()
+    metric['ND'] = accuracy_ND_(sample_mu, labels[:, predict_start:], relative=relative)
+    metric['RMSE'] = accuracy_RMSE_(sample_mu, labels[:, predict_start:], relative=relative)
+    if samples is not None:
+        metric['rou90'] = accuracy_ROU_(0.9, samples, labels[:, predict_start:], relative=relative)
+        metric['rou50'] = accuracy_ROU_(0.5, samples, labels[:, predict_start:], relative=relative)
+    return metric
+
+def update_metrics(raw_metrics, input_mu, input_sigma, sample_mu, labels, predict_start, samples=None, relative=False):
+    raw_metrics['ND'] = raw_metrics['ND'] + accuracy_ND(sample_mu, labels[:, predict_start:], relative=relative)
+    raw_metrics['RMSE'] = raw_metrics['RMSE'] + accuracy_RMSE(sample_mu, labels[:, predict_start:], relative=relative)
+    input_time_steps = input_mu.numel()
+    raw_metrics['test_loss'] = raw_metrics['test_loss'] + [deep_ar_loss_fn(input_mu, input_sigma, labels[:, :predict_start]) * input_time_steps, input_time_steps]
+    if samples is not None:
+        raw_metrics['rou90'] = raw_metrics['rou90'] + accuracy_ROU(0.9, samples, labels[:, predict_start:], relative=relative)
+        raw_metrics['rou50'] = raw_metrics['rou50'] + accuracy_ROU(0.5, samples, labels[:, predict_start:], relative=relative)
+    return raw_metrics
+
+def final_metrics(raw_metrics, sampling=False):
+    summary_metric = {}
+    summary_metric['ND'] = raw_metrics['ND'][0] / raw_metrics['ND'][1]
+    summary_metric['RMSE'] = np.sqrt(raw_metrics['RMSE'][0] / raw_metrics['RMSE'][2]) / (
+                raw_metrics['RMSE'][1] / raw_metrics['RMSE'][2])
+    summary_metric['test_loss'] = (raw_metrics['test_loss'][0] / raw_metrics['test_loss'][1]).item()
+    if sampling:
+        summary_metric['rou90'] = raw_metrics['rou90'][0] / raw_metrics['rou90'][1]
+        summary_metric['rou50'] = raw_metrics['rou50'][0] / raw_metrics['rou50'][1]
+    return summary_metric
+
+
+# if relative is set to True, metrics are not normalized by the scale of labels
+def accuracy_ND(mu: torch.Tensor, labels: torch.Tensor, relative = False):
+    zero_index = (labels != 0)
+    if relative:
+        diff = torch.mean(torch.abs(mu[zero_index] - labels[zero_index])).item()
+        return [diff, 1]
+    else:
+        diff = torch.sum(torch.abs(mu[zero_index] - labels[zero_index])).item()
+        summation = torch.sum(torch.abs(labels[zero_index])).item()
+        return [diff, summation]
+
+
+def accuracy_RMSE(mu: torch.Tensor, labels: torch.Tensor, relative = False):
+    zero_index = (labels != 0)
+    diff = torch.sum(torch.mul((mu[zero_index] - labels[zero_index]), (mu[zero_index] - labels[zero_index]))).item()
+    if relative:
+        return [diff, torch.sum(zero_index).item(), torch.sum(zero_index).item()]
+    else:
+        summation = torch.sum(torch.abs(labels[zero_index])).item()
+        if summation == 0:
+            logger.error('summation denominator error! ')
+        return [diff, summation, torch.sum(zero_index).item()]
+
+
+def accuracy_ROU(rou: float, samples: torch.Tensor, labels: torch.Tensor, relative = False):
+    numerator = 0
+    denominator = 0
+    pred_samples = samples.shape[0]
+    for t in range(labels.shape[1]):
+        zero_index = (labels[:, t] != 0)
+        if zero_index.numel() > 0:
+            rou_th = math.ceil(pred_samples * (1 - rou))
+            rou_pred = torch.topk(samples[:, zero_index, t], dim=0, k=rou_th)[0][-1, :]
+            abs_diff = labels[:, t][zero_index] - rou_pred
+            numerator += 2 * (torch.sum(rou * abs_diff[labels[:, t][zero_index] > rou_pred]) - torch.sum(
+                (1 - rou) * abs_diff[labels[:, t][zero_index] <= rou_pred])).item()
+            denominator += torch.sum(labels[:, t][zero_index]).item()
+    if relative:
+        return [numerator, torch.sum(labels != 0).item()]
+    else:
+        return [numerator, denominator]
+
+
+def accuracy_ND_(mu: torch.Tensor, labels: torch.Tensor, relative = False):
+    mu = mu.cpu().detach().numpy()
+    labels = labels.cpu().detach().numpy()
+
+    mu[labels == 0] = 0.
+
+    diff = np.sum(np.abs(mu - labels), axis=1)
+    if relative:
+        summation = np.sum((labels != 0), axis=1)
+        mask = (summation == 0)
+        summation[mask] = 1
+        result = diff / summation
+        result[mask] = -1
+        return result
+    else:
+        summation = np.sum(np.abs(labels), axis=1)
+        mask = (summation == 0)
+        summation[mask] = 1
+        result = diff / summation
+        result[mask] = -1
+        return result
+
+
+def accuracy_RMSE_(mu: torch.Tensor, labels: torch.Tensor, relative = False):
+    mu = mu.cpu().detach().numpy()
+    labels = labels.cpu().detach().numpy()
+
+    mask = labels == 0
+    mu[mask] = 0.
+
+    diff = np.sum((mu - labels) ** 2, axis=1)
+    summation = np.sum(np.abs(labels), axis=1)
+    mask2 = (summation == 0)
+    if relative:
+        div = np.sum(~mask, axis=1)
+        div[mask2] = 1
+        result = np.sqrt(diff / div)
+        result[mask2] = -1
+        return result
+    else:
+        summation[mask2] = 1
+        result = (np.sqrt(diff) / summation) * np.sqrt(np.sum(~mask, axis=1))
+        result[mask2] = -1
+        return result
+
+
+def accuracy_ROU_(rou: float, samples: torch.Tensor, labels: torch.Tensor, relative = False):
+    samples = samples.cpu().detach().numpy()
+    labels = labels.cpu().detach().numpy()
+
+    mask = labels == 0
+    samples[:, mask] = 0.
+
+    pred_samples = samples.shape[0]
+    rou_th = math.floor(pred_samples * rou)
+
+    samples = np.sort(samples, axis=0)
+    rou_pred = samples[rou_th]
+
+    abs_diff = np.abs(labels - rou_pred)
+    abs_diff_1 = abs_diff.copy()
+    abs_diff_1[labels < rou_pred] = 0.
+    abs_diff_2 = abs_diff.copy()
+    abs_diff_2[labels >= rou_pred] = 0.
+
+    numerator = 2 * (rou * np.sum(abs_diff_1, axis=1) + (1 - rou) * np.sum(abs_diff_2, axis=1))
+    denominator = np.sum(labels, axis=1)
+
+    mask2 = (denominator == 0)
+    denominator[mask2] = 1
+    result = numerator / denominator
+    result[mask2] = -1
+    return result    
+
+def plot_eight_windows(plot_dir,
+                       predict_values,
+                       predict_sigma,
+                       labels,
+                       window_size,
+                       predict_start,
+                       plot_num,
+                       plot_metrics,
+                       sampling=False):
+
+    x = np.arange(window_size)
+    f = plt.figure(figsize=(8, 42), constrained_layout=True)
+    nrows = 21
+    ncols = 1
+    ax = f.subplots(nrows, ncols)
+
+    for k in range(nrows):
+        if k == 10:
+            ax[k].plot(x, x, color='g')
+            ax[k].plot(x, x[::-1], color='g')
+            ax[k].set_title('This separates top 10 and bottom 90', fontsize=10)
+            continue
+        m = k if k < 10 else k - 1
+        ax[k].plot(x, predict_values[m], color='b')
+        ax[k].fill_between(x[predict_start:], predict_values[m, predict_start:] - 2 * predict_sigma[m, predict_start:],
+                         predict_values[m, predict_start:] + 2 * predict_sigma[m, predict_start:], color='blue',
+                         alpha=0.2)
+        ax[k].plot(x, labels[m, :], color='r')
+        ax[k].axvline(predict_start, color='g', linestyle='dashed')
+
+        #metrics = utils.final_metrics_({_k: [_i[k] for _i in _v] for _k, _v in plot_metrics.items()})
+
+
+        plot_metrics_str = f'ND: {plot_metrics["ND"][m]: .3f} ' \
+            f'RMSE: {plot_metrics["RMSE"][m]: .3f}'
+        if sampling:
+            plot_metrics_str += f' rou90: {plot_metrics["rou90"][m]: .3f} ' \
+                                f'rou50: {plot_metrics["rou50"][m]: .3f}'
+
+        ax[k].set_title(plot_metrics_str, fontsize=10)
+
+    f.savefig(os.path.join(plot_dir, str(plot_num) + '.png'))
+    plt.close()    
+
+def deep_ar_loss_fn(mu: torch.Tensor, sigma: torch.Tensor, labels: torch.Tensor):
+    '''
+    Compute using gaussian the log-likehood which needs to be maximized. Ignore time steps where labels are missing.
+    Args:
+        mu: (torch.Tensor) dimension [batch_size] - estimated mean at time step t
+        sigma: (torch.Tensor) dimension [batch_size] - estimated standard deviation at time step t
+        labels: (torch.Tensor) dimension [batch_size] z_t
+    Returns:
+        loss: (torch.Tensor) average log-likelihood loss across the batch
+    '''
+    zero_index = (labels != 0)
+    distribution = torch.distributions.normal.Normal(mu[zero_index], sigma[zero_index])
+    likelihood = distribution.log_prob(labels[zero_index])
+    return -torch.mean(likelihood)

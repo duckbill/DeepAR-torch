@@ -1,4 +1,4 @@
-'''Defines the neural network, loss function and metrics for single class'''
+'''Defines the neural network, loss function and metrics for single class, unfinished'''
 import os
 import sys
 sys.path.append(os.path.join( os.path.dirname(__file__), os.path.pardir ))
@@ -252,7 +252,7 @@ class Net(nn.Module):
 
     def point_predict(self,x):
         '''
-        x: (numpy.narray) shape: [sample, full-len, dim]
+        x: (torch.Tensor) shape: [sample, full-len, dim]
         return: (numpy.narray) shape: [sample, prediction-len]
         '''
         # test_batch: shape: [full-len, sample, dim]
@@ -260,7 +260,7 @@ class Net(nn.Module):
         if os.path.exists(best_pth):
             logger.info('Restoring best parameters from {}'.format(best_pth))
             load_checkpoint(best_pth,self,self.optimizer)
-        x = torch.tensor(x)
+
         test_batch = x.permute(1, 0, 2).to(torch.float32).to(self.params.device)
         batch_size = test_batch.shape[1]
         input_mu = torch.zeros(batch_size, self.params.predict_start, device=self.params.device) # scaled

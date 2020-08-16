@@ -70,20 +70,20 @@ def unpadding(y):
     
     return s
 
-class TrainDataset(Dataset):
+class scaled_Dataset(Dataset):
     def __init__(self, x_data, label_data):
         self.data = x_data.copy()
         self.label = label_data.copy()
-        self.train_len = self.data.shape[0]
-        logger.info(f'train_len: {self.train_len}')
+        self.samples = self.data.shape[0]
+        logger.info(f'samples: {self.samples}')
 
     def __len__(self):
-        return self.train_len
+        return self.samples
 
     def __getitem__(self, index):
         return (self.data[index,:,:-1],int(self.data[index,0,-1]), self.label[index])
 
-class TestDataset(Dataset):
+class raw_Dataset(Dataset):
     def __init__(self, x_data, label_data, v_data):
         self.data = x_data.copy()
         self.label = label_data.copy()
@@ -98,7 +98,7 @@ class TestDataset(Dataset):
         return (self.data[index,:,:-1],int(self.data[index,0,-1]),self.v[index],self.label[index])
 
 
-def prep_data(data, train = True, h=None,dim=None,sample_dense=True):
+def prep_data(data, train = True, h=None,dim=None,sample_dense=True, single_class = True):
     assert h != None and dim != None
     raw_data = unpadding(data).reshape(-1,1)
     time_len = raw_data.shape[0]
@@ -112,12 +112,14 @@ def prep_data(data, train = True, h=None,dim=None,sample_dense=True):
         windows_per_series = np.full((num_series), 1+ time_len-window_size)
     total_windows = np.sum(windows_per_series)
 
+    if single_class:
+        x_input = np.zeros((total_windows, window_size, 1),dtype = 'float32')
+    else:
+        x_input = np.zeros((total_windows, window_size, 2),dtype = 'float32')
 
-    x_input = np.zeros((total_windows, window_size, 1+1),dtype = 'float32')
     label = np.zeros((total_windows,window_size),dtype = 'float32')
-    v_input= np.zeros((total_windows, 2),dtype = 'float32')
 
-    count=0
+    count = 0
     for series in range(num_series):
         for i in range(windows_per_series[series]):
             # get the sample with minimal time period, in this case. which is 24 points (24h, 1 day)
@@ -135,28 +137,78 @@ def prep_data(data, train = True, h=None,dim=None,sample_dense=True):
             print("d: ", data[window_start:window_end-1, series].shape)
             '''
             # using the observed value in the t-1 step to forecast the t step, thus the first observed value in the input should be t0 step and is 0, as well as the first value in the labels should be t1 step.
-            x_input[count, 1:, 0] = raw_data[window_start:window_end-1, series]
-            x_input[count, :, -1] = series
+            if single_class:
+                x_input[count, 1:, 0] = raw_data[window_start:window_end-1, series]
+            else:
+                x_input[count, 1:, 0] = raw_data[window_start:window_end-1, series]
+                x_input[count, :, -1] = series
             label[count, :] = raw_data[window_start:window_end, series]
             # get the nonzero number of the input observed values
-            nonzero_sum = (x_input[count, 1:input_size, 0]!=0).sum()
-            if nonzero_sum == 0:
-                v_input[count, 0] = 0
-            else:
-                # get the average values of the input observed values ( +1 means smoothing?)
-                v_input[count, 0] = np.true_divide(x_input[count, 1:input_size, 0].sum(),nonzero_sum)+1
-                # sample standardization
-                x_input[count, :, 0] = x_input[count, :, 0]/v_input[count, 0]
-                if train:
-                    label[count, :] = label[count, :]/v_input[count, 0]
             count += 1
+
+
+    packed_dataset=scaled_Dataset(x_data=x_input,label_data=label)
+    return packed_dataset, x_input
+
+# def prep_multiclass_data(data, train = True, h=None,dim=None,sample_dense=True):
+#     assert h != None and dim != None
+#     raw_data = unpadding(data).reshape(-1,1)
+#     time_len = raw_data.shape[0]
+#     input_size = dim
+#     window_size = h + dim
+#     stride_size = h
+#     num_series = 1
+#     if not sample_dense:
+#         windows_per_series = np.full((num_series), (time_len-input_size) // stride_size)
+#     else:
+#         windows_per_series = np.full((num_series), 1+ time_len-window_size)
+#     total_windows = np.sum(windows_per_series)
+
+
+#     x_input = np.zeros((total_windows, window_size, 1+1),dtype = 'float32')
+#     label = np.zeros((total_windows,window_size),dtype = 'float32')
+#     v_input= np.zeros((total_windows, 2),dtype = 'float32')
+
+#     count=0
+#     for series in range(num_series):
+#         for i in range(windows_per_series[series]):
+#             # get the sample with minimal time period, in this case. which is 24 points (24h, 1 day)
+#             stride=1
+#             if not sample_dense:
+#                 stride=stride_size
+
+#             window_start = stride*i
+#             window_end = window_start+window_size
+#             '''
+#             print("x: ", x_input[count, 1:, 0].shape)
+#             print("window start: ", window_start)
+#             print("window end: ", window_end)
+#             print("data: ", data.shape)
+#             print("d: ", data[window_start:window_end-1, series].shape)
+#             '''
+#             # using the observed value in the t-1 step to forecast the t step, thus the first observed value in the input should be t0 step and is 0, as well as the first value in the labels should be t1 step.
+#             x_input[count, 1:, 0] = raw_data[window_start:window_end-1, series]
+#             x_input[count, :, -1] = series
+#             label[count, :] = raw_data[window_start:window_end, series]
+#             # get the nonzero number of the input observed values
+#             nonzero_sum = (x_input[count, 1:input_size, 0]!=0).sum()
+#             if nonzero_sum == 0:
+#                 v_input[count, 0] = 0
+#             else:
+#                 # get the average values of the input observed values ( +1 means smoothing?)
+#                 v_input[count, 0] = np.true_divide(x_input[count, 1:input_size, 0].sum(),nonzero_sum)+1
+#                 # sample standardization
+#                 x_input[count, :, 0] = x_input[count, :, 0]/v_input[count, 0]
+#                 if train:
+#                     label[count, :] = label[count, :]/v_input[count, 0]
+#             count += 1
     
-    dataset_torch = None
-    if train:
-        dataset_torch=TrainDataset(x_data=x_input,label_data= label)
-    else:
-        dataset_torch=TestDataset(x_data=x_input,label_data= label, v_data= v_input)
-    return dataset_torch
+#     packed_dataset = None
+#     if train:
+#         packed_dataset=std_Dataset(x_data=x_input,label_data= label)
+#     else:
+#         packed_dataset=raw_Dataset(x_data=x_input,label_data= label, v_data= v_input)
+#     return packed_dataset
 
 class Params:
     '''Class that loads hyperparameters from a json file.
